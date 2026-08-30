@@ -1,0 +1,6 @@
+import { createClient } from "@/lib/supabase/server";
+import { redirect } from "next/navigation";
+export default async function Profile(){
+ const supabase=await createClient();const {data:{user}}=await supabase.auth.getUser();if(!user)redirect("/login");
+ return <main><section className="hero"><div className="eyebrow">Profile</div><h1>Your Masquerade.</h1><p>{user.email}</p></section><section className="card"><h2>Difficulty philosophy</h2><p>Clever, Devious, and Fiendish all target strong solvers. Difficulty comes from mechanism depth, not obscure trivia.</p></section><form action="/api/auth/signout" method="post"><button className="btn danger">SIGN OUT</button></form></main>
+}
