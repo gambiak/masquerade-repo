@@ -1,77 +1,89 @@
-# Masquerade V7
+# Masquerade V7 — Azure Edition
 
-Masquerade V7 is the first multiplayer-ready architecture. It preserves the V6 game philosophy while removing **Change My Perspective** completely.
+This package removes Supabase completely and uses Azure-native deployment patterns:
 
-## Included
+- Next.js on **Azure App Service (Linux)**
+- **Azure Database for PostgreSQL Flexible Server** via the `pg` driver
+- **Azure App Service Authentication (Easy Auth)** with Microsoft Entra
+- Server-side answer/hint validation; correct answers are never sent in the clue payload
+- Challenge links and crew join links included as beta functionality
+- **Change My Perspective remains removed**
 
-- Next.js application structure
-- Supabase authentication with email magic links
-- Daily Masquerade model
-- Clever / Devious / Fiendish difficulty
-- Five-puzzle daily runs
-- Final Mask support
-- Exactly three escalating hints
-- One-word answer philosophy
-- Numeric/spelled-number answer support
-- Server API for answer checking and scoring
-- Persistent active sessions + Continue Game
-- Quit Game
-- Hint-based scoring + First Try + Final Mask bonuses
-- Pure Solve tracking
-- Non-repeating witty wrong-answer coaching
-- Spoiler-free results structure
-- Friend challenge data model and creation UI
-- Morning Crew data model and creation UI
-- Stats/profile screens
-- Admin Puzzle Studio starter
-- Supabase SQL schema + seed file
-- RLS starter policies
+## 1. Azure PostgreSQL
+Create an Azure Database for PostgreSQL Flexible Server and a database named `masquerade`.
+Run:
 
-## Security architecture
+```bash
+psql "host=YOURSERVER.postgres.database.azure.com dbname=masquerade user=YOURUSER sslmode=require" -f azure/schema.sql
+psql "host=YOURSERVER.postgres.database.azure.com dbname=masquerade user=YOURUSER sslmode=require" -f azure/seed.sql
+```
 
-`puzzles_private` contains answers and all hints and has no player-facing read policy. Answer checking and hint retrieval use a **server-only Supabase service-role client** in `lib/supabase/admin.ts`. Never expose `SUPABASE_SERVICE_ROLE_KEY` to client code.
+`azure/seed.sql` publishes three games for the database server's `current_date`. Re-run only on a fresh test database because the puzzle seed is intentionally simple, not idempotent.
 
-## Local setup
+## 2. Local environment
+Copy `.env.example` to `.env.local` and fill in the Azure PostgreSQL values.
+For local-only auth testing set:
 
-1. Create a Supabase project.
-2. Run `supabase/schema.sql` in the Supabase SQL editor.
-3. Run `supabase/seed.sql`.
-4. Populate at least 5 approved puzzles for each difficulty.
-5. Create today's `daily_games` records and `daily_game_puzzles` links.
-6. Copy `.env.example` to `.env.local`.
-7. Fill:
-   - `NEXT_PUBLIC_SUPABASE_URL`
-   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-   - `SUPABASE_SERVICE_ROLE_KEY`
-   - `NEXT_PUBLIC_SITE_URL`
-   - `ADMIN_EMAIL`
-8. Install dependencies:
-   `npm install`
-9. Start:
-   `npm run dev`
-10. Open `http://localhost:3000`
+```text
+DEV_AUTH_BYPASS=true
+DEV_USER_EMAIL=you@example.com
+```
 
-## Production deployment
+Never enable `DEV_AUTH_BYPASS` in Azure production.
 
-Recommended:
-- GitHub repository
-- Supabase production project
-- Vercel deployment
-- Custom domain
-- Supabase Auth redirect URL set to your deployed domain
-- HTTPS only
-- RLS reviewed before beta
-- Service-role key stored only as a server secret
-- Never expose answers in client bundles
+Then:
 
-## Next engineering tasks before public beta
+```bash
+npm install
+npm run typecheck
+npm run build
+npm run dev
+```
 
-1. Add challenge acceptance route and comparison screen.
-3. Add crew invite/join route.
-4. Add actual Web Share API client component.
-5. Add admin Daily Game scheduler.
-6. Add puzzle QA metadata: ambiguity, Aha strength, hint leakage, knowledge dependency.
-7. Add analytics events.
-8. Add semantic/AI wrong-answer coach server-side.
-9. Add notification system.
-10. Add PWA manifest/icons/service worker.
+## 3. Azure App Service
+Use a Linux App Service with a supported Node.js runtime. The package contains `build` and `start` scripts. A startup command of `npm start` is acceptable, though Azure's production guidance also supports a custom/PM2 startup configuration.
+
+Add these App Service environment variables:
+
+```text
+NEXT_PUBLIC_SITE_URL=https://YOUR-DEFAULT-DOMAIN.azurewebsites.net
+AZURE_POSTGRES_HOST=YOURSERVER.postgres.database.azure.com
+AZURE_POSTGRES_DATABASE=masquerade
+AZURE_POSTGRES_USER=YOURUSER
+AZURE_POSTGRES_PASSWORD=YOURPASSWORD
+AZURE_POSTGRES_PORT=5432
+ENTRA_CLIENT_ID=YOUR-APP-CLIENT-ID
+ENTRA_TENANT_ID=YOUR-DIRECTORY-TENANT-ID
+ADMIN_EMAIL=YOUR-EMAIL
+DEV_AUTH_BYPASS=false
+SCM_DO_BUILD_DURING_DEPLOYMENT=true
+```
+
+`ENTRA_CLIENT_ID` and `ENTRA_TENANT_ID` are retained as configuration metadata. Easy Auth itself validates identity before requests reach this app.
+
+## 4. Enable App Service Authentication
+In Azure Portal:
+
+1. App Service → **Authentication**.
+2. Add identity provider → **Microsoft**.
+3. Select/create the Entra app registration you want to use.
+4. For the beta, allow unauthenticated requests so `/login` can render; protected application pages redirect to `/login` themselves.
+5. Save.
+6. Open `/login` and use **SIGN IN / CREATE ACCOUNT**.
+
+After successful authentication App Service adds `X-MS-CLIENT-PRINCIPAL`; `lib/auth.ts` decodes it and creates/updates the corresponding row in `users`.
+
+## 5. GitHub deployment
+Keep `package.json` at the GitHub repository root. Connect App Service → Deployment Center → GitHub → `main` branch. After the GitHub Action completes, restart the App Service and open the exact **Default domain** from App Service → Overview.
+
+## 6. Security notes
+- Answers and hints are queried only on server routes.
+- `/api/answer`, `/api/hint`, and `/api/hints` resolve the expected current puzzle from the session server-side; the browser cannot choose an arbitrary puzzle ID.
+- Scores are calculated server-side.
+- Admin access requires the signed-in Easy Auth email to exactly match `ADMIN_EMAIL`.
+- Before a public launch, move PostgreSQL password auth to Managed Identity/Entra DB auth, add rate limiting, and review invite-token lifecycle.
+
+## 7. Beta multiplayer
+- Finish a game, then use **Challenge** to create a friend challenge URL.
+- Crew creation generates a `/join/<code>` invite URL.
+- These flows are beta-grade and intended for a small friend test before notifications/realtime are added.

@@ -1,15 +1,14 @@
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
+import { getCurrentUser } from "@/lib/auth";
+import { query } from "@/lib/db";
 import PlayClient from "@/components/PlayClient";
 export default async function Play(){
- const supabase=await createClient();
- const {data:{user}}=await supabase.auth.getUser();
- if(!user)redirect("/login");
- const {data:session}=await supabase.from("game_sessions").select("*").eq("user_id",user.id).eq("status","active").maybeSingle();
+ const user=await getCurrentUser(); if(!user)redirect("/login");
+ const session=(await query<any>(`select * from game_sessions where user_id=$1 and status='active' order by started_at desc limit 1`,[user.id])).rows[0];
  if(!session)redirect("/start");
- const {data:link}=await supabase.from("daily_game_puzzles").select("position,puzzle_id").eq("daily_game_id",session.daily_game_id).eq("position",session.current_position).maybeSingle();
- if(!link)redirect("/");
- const {data:p}=await supabase.from("puzzles_public").select("id,clue_type,clue_text,is_final_mask").eq("id",link.puzzle_id).maybeSingle();
+ const p=(await query<any>(`select p.id,p.clue_type,p.clue_text,p.is_final_mask,dgp.position
+   from daily_game_puzzles dgp join puzzles p on p.id=dgp.puzzle_id
+   where dgp.daily_game_id=$1 and dgp.position=$2`,[session.daily_game_id,session.current_position])).rows[0];
  if(!p)redirect("/");
- return <main><PlayClient session={session} puzzle={{...p,position:link.position}} shownHints={[]}/></main>
+ return <main><PlayClient session={session} puzzle={p} shownHints={[]}/></main>
 }

@@ -6,11 +6,11 @@ type Session={id:string;current_position:number;difficulty_band:string};
 
 export default function PlayClient({session,puzzle,shownHints}:{session:Session;puzzle:Puzzle;shownHints:string[]}){
  const [answer,setAnswer]=useState(""); const [coach,setCoach]=useState(""); const [hints,setHints]=useState(shownHints); const [busy,setBusy]=useState(false);
- useEffect(()=>{ fetch("/api/hints",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:session.id,puzzleId:puzzle.id})}).then(r=>r.json()).then(d=>d.hints&&setHints(d.hints)); },[session.id,puzzle.id]);
+ useEffect(()=>{ fetch("/api/hints",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:session.id})}).then(r=>r.json()).then(d=>d.hints&&setHints(d.hints)); },[session.id,puzzle.id]);
  async function submit(){
    if(!answer.trim()||busy)return;
    setBusy(true);
-   const r=await fetch("/api/answer",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:session.id,puzzleId:puzzle.id,answer})});
+   const r=await fetch("/api/answer",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:session.id,answer})});
    const data=await r.json();
    setBusy(false);
    if(data.correct){
@@ -19,7 +19,7 @@ export default function PlayClient({session,puzzle,shownHints}:{session:Session;
    }else setCoach(data.message);
  }
  async function hint(){
-   const r=await fetch("/api/hint",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:session.id,puzzleId:puzzle.id})});
+   const r=await fetch("/api/hint",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:session.id})});
    const data=await r.json(); if(data.hint)setHints(x=>[...x,data.hint]);
  }
  async function quit(){ if(!confirm("Quit this game? Your unfinished run will be discarded."))return; await fetch("/api/session/quit",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({sessionId:session.id})}); location.href="/"; }

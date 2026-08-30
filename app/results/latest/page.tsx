@@ -1,10 +1,2 @@
-import { createClient } from "@/lib/supabase/server";
-import { redirect } from "next/navigation";
-import ShareButton from "@/components/ShareButton";
-export default async function Latest(){
- const supabase=await createClient();const {data:{user}}=await supabase.auth.getUser();if(!user)redirect("/login");
- const {data:r}=await supabase.from("game_sessions").select("*").eq("user_id",user.id).eq("status","completed").order("completed_at",{ascending:false}).limit(1).maybeSingle();if(!r)redirect("/");
- const grid=Array.from({length:5},(_,i)=>i<(r.pure_solves||0)?"🟣":"💡").join(" ");
- const text=`MASQUERADE\n${r.score} pts\n${grid}\n🎭 ${r.pure_solves} Pure Solves · ${r.hints_used} hints · ${Math.floor(r.solve_time_ms/1000)} sec`;
- return <main><section className="hero"><div className="eyebrow">Spoiler-free result</div><h1>Masquerade complete.</h1></section><section className="share"><h2>{r.score} pts</h2><p style={{fontSize:24}}>{grid}</p><p>{r.pure_solves} Pure Solves · {r.hints_used} hints · {Math.floor(r.solve_time_ms/1000)} sec</p><ShareButton text={text}/></section></main>
-}
+import { getCurrentUser } from "@/lib/auth";import { query } from "@/lib/db";import { redirect } from "next/navigation";import ShareButton from "@/components/ShareButton";
+export default async function Latest(){const user=await getCurrentUser();if(!user)redirect("/login");const r=(await query<any>(`select gs.*,dg.game_number from game_sessions gs join daily_games dg on dg.id=gs.daily_game_id where gs.user_id=$1 and gs.status='completed' order by gs.completed_at desc limit 1`,[user.id])).rows[0];if(!r)redirect("/");const results=(await query<any>(`select pr.*,dgp.position from puzzle_results pr join daily_game_puzzles dgp on dgp.puzzle_id=pr.puzzle_id and dgp.daily_game_id=$1 where pr.session_id=$2 order by dgp.position`,[r.daily_game_id,r.id])).rows;const grid=results.map((x:any)=>x.pure_solve?"🟣":Number(x.hints_used)===0?"✅":"💡".repeat(Math.min(Number(x.hints_used),3))).join(" ");const text=`MASQUERADE #${r.game_number}\n${r.score} pts\n${grid}\n🎭 ${r.pure_solves} Pure Solves · ${r.hints_used} hints · ${Math.floor(Number(r.solve_time_ms||0)/1000)} sec`;return <main><section className="hero"><div className="eyebrow">Spoiler-free result</div><h1>Masquerade #{r.game_number} complete.</h1></section><section className="share"><h2>{r.score} pts</h2><p style={{fontSize:24}}>{grid}</p><p>{r.pure_solves} Pure Solves · {r.hints_used} hints · {Math.floor(Number(r.solve_time_ms||0)/1000)} sec</p><ShareButton text={text}/></section></main>}
