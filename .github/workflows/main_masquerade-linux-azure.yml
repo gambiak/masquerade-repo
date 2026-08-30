@@ -28,6 +28,13 @@ jobs:
           npm install
           npm run build --if-present
           npm run test --if-present
+        env:
+          AZURE_POSTGRES_HOST: ${{ secrets.AZURE_POSTGRES_HOST }}
+          AZURE_POSTGRES_DATABASE: ${{ secrets.AZURE_POSTGRES_DATABASE }}
+          AZURE_POSTGRES_USER: ${{ secrets.AZURE_POSTGRES_USER }}
+          AZURE_POSTGRES_PASSWORD: ${{ secrets.AZURE_POSTGRES_PASSWORD }}
+          ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
+          NEXT_PUBLIC_SITE_URL: ${{ secrets.NEXT_PUBLIC_SITE_URL }}
 
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
