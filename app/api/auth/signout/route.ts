@@ -1,3 +1,8 @@
-import { NextResponse } from "next/server";
-import { logoutUrl } from "@/lib/auth";
-export async function POST(req:Request){ return NextResponse.redirect(new URL(logoutUrl(), req.url)); }
+import { NextRequest, NextResponse } from "next/server";
+
+export async function GET(request: NextRequest) {
+  const url = new URL("/.auth/logout", request.url);
+  url.searchParams.set("post_logout_redirect_uri", "/");
+
+  return NextResponse.redirect(url);
+}
