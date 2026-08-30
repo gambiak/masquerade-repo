@@ -1,35 +1,42 @@
-import { Pool, QueryResultRow } from "pg";
+import { Pool, QueryResult, QueryResultRow } from "pg";
 
-declare global {
-  // eslint-disable-next-line no-var
-  var __masqueradePool: Pool | undefined;
-}
+let pool: Pool | null = null;
 
-function makePool() {
+function getPool(): Pool {
+  if (pool) {
+    return pool;
+  }
+
   const host = process.env.AZURE_POSTGRES_HOST;
   const database = process.env.AZURE_POSTGRES_DATABASE;
   const user = process.env.AZURE_POSTGRES_USER;
   const password = process.env.AZURE_POSTGRES_PASSWORD;
-  const port = Number(process.env.AZURE_POSTGRES_PORT || 5432);
+  const port = Number(process.env.AZURE_POSTGRES_PORT || "5432");
+
   if (!host || !database || !user || !password) {
-    throw new Error("Azure PostgreSQL environment variables are incomplete.");
+    throw new Error(
+      "Azure PostgreSQL environment variables are incomplete."
+    );
   }
-  return new Pool({
+
+  pool = new Pool({
     host,
     database,
     user,
     password,
     port,
-    ssl: { rejectUnauthorized: true },
+    ssl: {
+      rejectUnauthorized: true,
+    },
     max: 10,
-    idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 10_000,
   });
+
+  return pool;
 }
 
-export const pool = global.__masqueradePool ?? makePool();
-if (process.env.NODE_ENV !== "production") global.__masqueradePool = pool;
-
-export async function query<T extends QueryResultRow = QueryResultRow>(text: string, params: unknown[] = []) {
-  return pool.query<T>(text, params);
+export async function query<T extends QueryResultRow = QueryResultRow>(
+  text: string,
+  params?: unknown[]
+): Promise<QueryResult<T>> {
+  return getPool().query<T>(text, params);
 }
