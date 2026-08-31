@@ -1,4 +1,5 @@
 import crypto from "crypto";
+
 import { NextResponse } from "next/server";
 
 import {
@@ -10,14 +11,26 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const DIFFICULTIES: Difficulty[] = ["clever", "devious", "fiendish"];
+const STAGES: GenerationStage[] = ["generate", "review", "publish"];
+const MAX_GENERATION_ROUNDS = 4;
+
 function safeEqual(left: string, right: string): boolean {
   const a = Buffer.from(left);
   const b = Buffer.from(right);
 
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function isDifficulty(value: unknown): value is Difficulty {
   return (
-    a.length === b.length &&
-    crypto.timingSafeEqual(a, b)
+    typeof value === "string" &&
+    DIFFICULTIES.includes(value as Difficulty)
   );
+}
+
+function isStage(value: unknown): value is GenerationStage {
+  return typeof value === "string" && STAGES.includes(value as GenerationStage);
 }
 
 export async function POST(req: Request) {
@@ -37,26 +50,17 @@ export async function POST(req: Request) {
     ? authorization.slice("Bearer ".length)
     : "";
 
-  if (
-    !suppliedSecret ||
-    !safeEqual(suppliedSecret, expectedSecret)
-  ) {
-    return NextResponse.json(
-      { error: "Unauthorized." },
-      { status: 401 }
-    );
+  if (!suppliedSecret || !safeEqual(suppliedSecret, expectedSecret)) {
+    return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
 
   try {
     const body = await req.json();
 
     const targetDate = body?.targetDate;
-    const difficulty = body?.difficulty as Difficulty | undefined;
-    const stage = body?.stage as GenerationStage | undefined;
-    const round =
-      typeof body?.round === "number"
-        ? body.round
-        : undefined;
+    const difficulty = body?.difficulty;
+    const stage = body?.stage;
+    const round = body?.round;
 
     if (typeof targetDate !== "string") {
       return NextResponse.json(
@@ -65,71 +69,47 @@ export async function POST(req: Request) {
       );
     }
 
-    if (
-      !difficulty ||
-      !["clever", "devious", "fiendish"].includes(difficulty)
-    ) {
+    if (!isDifficulty(difficulty)) {
       return NextResponse.json(
-        {
-          error:
-            "difficulty must be clever, devious, or fiendish.",
-        },
+        { error: "difficulty must be clever, devious, or fiendish." },
         { status: 400 }
       );
     }
 
-    if (
-      !stage ||
-      !["generate", "review", "publish"].includes(stage)
-    ) {
+    if (!isStage(stage)) {
       return NextResponse.json(
-        {
-          error:
-            "stage must be generate, review, or publish.",
-        },
+        { error: "stage must be generate, review, or publish." },
         { status: 400 }
       );
     }
 
-    if (
-      stage === "generate" &&
-      round !== undefined &&
-      ![1, 2].includes(round)
-    ) {
-      return NextResponse.json(
-        { error: "round must be 1 or 2." },
-        { status: 400 }
-      );
+    if (stage === "generate") {
+      if (
+        !Number.isInteger(round) ||
+        round < 1 ||
+        round > MAX_GENERATION_ROUNDS
+      ) {
+        return NextResponse.json(
+          { error: `round must be 1-${MAX_GENERATION_ROUNDS}.` },
+          { status: 400 }
+        );
+      }
     }
-
-    console.log(
-      `Puzzle generation stage starting: ${targetDate} / ${difficulty} / ${stage}` +
-        (stage === "generate" ? ` / round ${round || 1}` : "")
-    );
 
     const result = await runGenerationStage(
       targetDate,
       difficulty,
       stage,
-      round
-    );
-
-    console.log(
-      `Puzzle generation stage finished: ${targetDate} / ${difficulty} / ${stage}`
+      stage === "generate" ? round : undefined
     );
 
     return NextResponse.json(result);
   } catch (error) {
-    console.error("Puzzle generation stage failed:", error);
+    console.error("Puzzle generation failed:", error);
 
     const message =
-      error instanceof Error
-        ? error.message
-        : "Puzzle generation failed.";
+      error instanceof Error ? error.message : "Puzzle generation failed.";
 
-    return NextResponse.json(
-      { error: message },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
