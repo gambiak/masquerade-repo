@@ -1,4 +1,4 @@
-name: Generate Daily Masquerade Puzzles
+name: Generate Daily Masquerade Puzzles 
 
 on:
   schedule:
