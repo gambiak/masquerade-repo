@@ -61,6 +61,7 @@ const REVIEWER_MODEL =
   process.env.PUZZLE_REVIEWER_MODEL || "gpt-5.6-sol";
 
 const REVIEW_THRESHOLD = 80;
+const PLAYABLE_REVIEW_THRESHOLD = 25;
 const MAX_GENERATION_ROUNDS = 4;
 
 const ROUND_CANDIDATE_COUNTS: Record<number, number> = {
@@ -671,14 +672,23 @@ function reviewPasses(review: Review): boolean {
   );
 }
 
-function chooseFive(candidates: ReviewedCandidate[]): ReviewedCandidate[] {
-  const sorted = [...candidates].sort((a, b) => {
+function sortReviewedCandidates(
+  candidates: ReviewedCandidate[]
+): ReviewedCandidate[] {
+  return [...candidates].sort((a, b) => {
     if (b.review.review_score !== a.review.review_score) {
       return b.review.review_score - a.review.review_score;
     }
     return b.difficulty_score - a.difficulty_score;
   });
+}
 
+function chooseWithTypeCap(
+  candidates: ReviewedCandidate[],
+  typeCap: number,
+  minimumTypes: number
+): ReviewedCandidate[] {
+  const sorted = sortReviewedCandidates(candidates);
   const chosen: ReviewedCandidate[] = [];
   const clueCounts = new Map<string, number>();
 
@@ -686,7 +696,7 @@ function chooseFive(candidates: ReviewedCandidate[]): ReviewedCandidate[] {
     if (chosen.length === 5) break;
 
     const current = clueCounts.get(candidate.clue_type) || 0;
-    if (current >= 2) continue;
+    if (current >= typeCap) continue;
 
     chosen.push(candidate);
     clueCounts.set(candidate.clue_type, current + 1);
@@ -694,12 +704,26 @@ function chooseFive(candidates: ReviewedCandidate[]): ReviewedCandidate[] {
 
   if (
     chosen.length === 5 &&
-    new Set(chosen.map((x) => x.clue_type)).size >= 3
+    new Set(chosen.map((x) => x.clue_type)).size >= minimumTypes
   ) {
     return chosen;
   }
 
   return [];
+}
+
+function chooseFive(candidates: ReviewedCandidate[]): ReviewedCandidate[] {
+  // Preferred Masquerade mix: at least 3 clue types, max 2 of one type.
+  const strict = chooseWithTypeCap(candidates, 2, 3);
+  if (strict.length === 5) return strict;
+
+  // Family/friends fallback: at least 2 clue types, max 3 of one type.
+  const relaxed = chooseWithTypeCap(candidates, 3, 2);
+  if (relaxed.length === 5) return relaxed;
+
+  // Last-resort playable set: take the five strongest reviewed candidates.
+  // Safety/fairness filtering happens before candidates reach this function.
+  return sortReviewedCandidates(candidates).slice(0, 5);
 }
 
 function assertInputs(targetDate: string, difficulty: Difficulty): void {
@@ -901,18 +925,52 @@ async function loadApprovedCandidates(batchId: string): Promise<ReviewedCandidat
   return result.rows.map(storedRowToReviewed);
 }
 
+async function loadPlayableCandidates(
+  batchId: string
+): Promise<ReviewedCandidate[]> {
+  const result = await getPool().query<StoredCandidate>(
+    `
+      select *
+      from puzzle_generation_candidates
+      where batch_id = $1
+        and review_status in ('approved', 'rejected')
+        and review_score >= $2
+        and coalesce((review_notes ->> 'answer_fair')::boolean, false) = true
+        and coalesce((review_notes ->> 'hint_quality')::boolean, false) = true
+        and coalesce((review_notes ->> 'family_safe')::boolean, false) = true
+      order by
+        case when review_status = 'approved' then 0 else 1 end,
+        review_score desc,
+        difficulty_score desc
+    `,
+    [batchId, PLAYABLE_REVIEW_THRESHOLD]
+  );
+
+  return result.rows.map(storedRowToReviewed);
+}
+
 async function hasPublishableFive(batchId: string): Promise<{
   ready: boolean;
   approvedCount: number;
   clueTypes: number;
 }> {
   const approved = await loadApprovedCandidates(batchId);
-  const chosen = chooseFive(approved);
+
+  if (chooseFive(approved).length === 5) {
+    return {
+      ready: true,
+      approvedCount: approved.length,
+      clueTypes: new Set(approved.map((x) => x.clue_type)).size,
+    };
+  }
+
+  const playable = await loadPlayableCandidates(batchId);
+  const chosen = chooseFive(playable);
 
   return {
     ready: chosen.length === 5,
     approvedCount: approved.length,
-    clueTypes: new Set(approved.map((x) => x.clue_type)).size,
+    clueTypes: new Set(playable.map((x) => x.clue_type)).size,
   };
 }
 
@@ -1357,12 +1415,19 @@ export async function publishStage(
 
   try {
     const approved = await loadApprovedCandidates(batch.id);
-    const chosen = chooseFive(approved);
+    let chosen = chooseFive(approved);
+    let selectionMode = "strict-approved";
+
+    if (chosen.length !== 5) {
+      const playable = await loadPlayableCandidates(batch.id);
+      chosen = chooseFive(playable);
+      selectionMode = "family-playable";
+    }
 
     if (chosen.length !== 5) {
       throw new Error(
-        `Could not choose five diverse publication-quality ${difficulty} puzzles after up to ${MAX_GENERATION_ROUNDS} rounds. ` +
-          `Approved candidates: ${approved.length}. Need five with at least three clue types and no more than two of one clue type.`
+        `Could not choose five safe, fair, playable ${difficulty} puzzles. ` +
+          `Strict approvals: ${approved.length}. Need at least five reviewed candidates with fair answers, sound hints, and family-safe content.`
       );
     }
 
@@ -1527,6 +1592,7 @@ export async function publishStage(
       status: "published",
       puzzlesPublished: 5,
       approvedCandidates: approved.length,
+      selectionMode,
       generatorModel: GENERATOR_MODEL,
       reviewerModel: REVIEWER_MODEL,
     };
