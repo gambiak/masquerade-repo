@@ -1,13 +1,9 @@
-name: Generate Daily Masquerade Puzzles 
+name: Generate Daily Masquerade Puzzles
 
 on:
   schedule:
-    # GitHub schedules use UTC.
-    #
-    # 09:23 UTC every day.
-    # Avoid the top of the hour because
-    # GitHub warns scheduled workflows
-    # can be delayed at high-load times.
+    # 09:23 UTC every day. Scheduled runs maintain
+    # a rolling 14-day future buffer.
     - cron: "23 9 * * *"
 
   workflow_dispatch:
@@ -30,8 +26,7 @@ concurrency:
 jobs:
   generate:
     runs-on: ubuntu-latest
-
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     permissions:
       contents: read
@@ -42,11 +37,8 @@ jobs:
 
         env:
           MASQUERADE_APP_URL: ${{ secrets.MASQUERADE_APP_URL }}
-
           PUZZLE_CRON_SECRET: ${{ secrets.PUZZLE_CRON_SECRET }}
-
           EVENT_NAME: ${{ github.event_name }}
-
           FILL_DAYS: ${{ inputs.fill_days }}
 
         run: |
@@ -65,30 +57,60 @@ jobs:
           BASE_URL="${MASQUERADE_APP_URL%/}"
 
           if [ "$EVENT_NAME" = "schedule" ]; then
-            #
-            # Normal daily run:
-            #
-            # Generate exactly the day that is
-            # 14 days in the future.
-            #
-            # Because yesterday's run generated
-            # day +13 relative to today, this
-            # maintains a rolling 14-day buffer.
-            #
             START_OFFSET=14
             END_OFFSET=14
           else
-            #
-            # Manual bootstrap:
-            #
-            # Generate tomorrow through N days.
-            #
             START_OFFSET=1
             END_OFFSET="${FILL_DAYS:-14}"
           fi
 
-          for OFFSET in $(seq "$START_OFFSET" "$END_OFFSET"); do
+          call_stage() {
+            local target_date="$1"
+            local difficulty="$2"
+            local stage="$3"
+            local round="${4:-}"
 
+            local payload
+            if [ -n "$round" ]; then
+              payload="{\"targetDate\":\"${target_date}\",\"difficulty\":\"${difficulty}\",\"stage\":\"${stage}\",\"round\":${round}}"
+            else
+              payload="{\"targetDate\":\"${target_date}\",\"difficulty\":\"${difficulty}\",\"stage\":\"${stage}\"}"
+            fi
+
+            echo ""
+            echo "----------------------------------------"
+            echo "${target_date} / ${difficulty} / ${stage}${round:+ / round ${round}}"
+            echo "----------------------------------------"
+
+            # Each call now performs at most one OpenAI request.
+            # Do not blindly retry 504/timeout responses because
+            # the server may still have completed the AI call.
+            HTTP_CODE=$(
+              curl \
+                --silent \
+                --show-error \
+                --output response.json \
+                --write-out "%{http_code}" \
+                --max-time 230 \
+                --request POST \
+                "${BASE_URL}/api/admin/puzzles/generate" \
+                --header "Authorization: Bearer ${PUZZLE_CRON_SECRET}" \
+                --header "Content-Type: application/json" \
+                --data "$payload" \
+              || true
+            )
+
+            cat response.json || true
+            echo ""
+            echo "HTTP ${HTTP_CODE}"
+
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "Stage failed."
+              exit 1
+            fi
+          }
+
+          for OFFSET in $(seq "$START_OFFSET" "$END_OFFSET"); do
             TARGET_DATE=$(date -u -d "+${OFFSET} day" +%F)
 
             echo ""
@@ -97,52 +119,16 @@ jobs:
             echo "========================================"
 
             for DIFFICULTY in clever devious fiendish; do
+              # Preserve the original two-round quality strategy,
+              # but isolate every expensive AI call in its own
+              # App Service request.
+              call_stage "$TARGET_DATE" "$DIFFICULTY" "generate" "1"
+              call_stage "$TARGET_DATE" "$DIFFICULTY" "review"
 
-              echo ""
-              echo "Generating ${DIFFICULTY}..."
+              call_stage "$TARGET_DATE" "$DIFFICULTY" "generate" "2"
+              call_stage "$TARGET_DATE" "$DIFFICULTY" "review"
 
-              SUCCESS=false
-
-              for ATTEMPT in 1 2; do
-
-                echo "Attempt ${ATTEMPT}"
-
-                HTTP_CODE=$(
-                  curl \
-                    --silent \
-                    --show-error \
-                    --output response.json \
-                    --write-out "%{http_code}" \
-                    --max-time 600 \
-                    --request POST \
-                    "${BASE_URL}/api/admin/puzzles/generate" \
-                    --header "Authorization: Bearer ${PUZZLE_CRON_SECRET}" \
-                    --header "Content-Type: application/json" \
-                    --data "{\"targetDate\":\"${TARGET_DATE}\",\"difficulty\":\"${DIFFICULTY}\"}" \
-                  || true
-                )
-
-                cat response.json || true
-                echo ""
-
-                if [ "$HTTP_CODE" = "200" ]; then
-                  SUCCESS=true
-                  break
-                fi
-
-                echo "HTTP ${HTTP_CODE}. Retrying..."
-                sleep 10
-
-              done
-
-              if [ "$SUCCESS" != "true" ]; then
-                echo ""
-                echo "Generation failed for:"
-                echo "${TARGET_DATE} / ${DIFFICULTY}"
-
-                exit 1
-              fi
-
+              # Publishing is database-only and should be fast.
+              call_stage "$TARGET_DATE" "$DIFFICULTY" "publish"
             done
-
           done
