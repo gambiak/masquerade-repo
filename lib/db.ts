@@ -2,7 +2,7 @@ import { Pool, QueryResult, QueryResultRow } from "pg";
 
 let pool: Pool | null = null;
 
-function getPool(): Pool {
+export function getPool(): Pool {
   if (pool) {
     return pool;
   }

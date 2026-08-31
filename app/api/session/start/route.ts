@@ -1,15 +1,15 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { pool, query } from "@/lib/db";
+import { getPool } from "@/lib/db";
 export async function POST(req:Request){
  const user=await getCurrentUser(); if(!user)return NextResponse.json({error:"unauthorized"},{status:401});
  const {difficulty}=await req.json(); if(!["clever","devious","fiendish"].includes(difficulty))return NextResponse.json({error:"invalid difficulty"},{status:400});
- const game=(await query<any>(`select * from daily_games where game_date=current_date and difficulty_band=$1 and published=true limit 1`,[difficulty])).rows[0];
+ const game=(await getPool().query<any>(`select * from daily_games where game_date=current_date and difficulty_band=$1 and published=true limit 1`,[difficulty])).rows[0];
  if(!game)return NextResponse.json({error:"No daily game published."},{status:404});
- const existing=(await query<any>(`select * from game_sessions where user_id=$1 and daily_game_id=$2 limit 1`,[user.id,game.id])).rows[0];
+ const existing=(await getPool().query<any>(`select * from game_sessions where user_id=$1 and daily_game_id=$2 limit 1`,[user.id,game.id])).rows[0];
  if(existing?.status==='active') return NextResponse.json({session:existing});
  if(existing?.status==='completed') return NextResponse.json({error:"Today's game is already complete."},{status:409});
- const c=await pool.connect(); try{
+ const c=await getPool().connect(); try{
    await c.query('begin');
    if(existing?.status==='quit'){
      await c.query(`delete from puzzle_attempts where session_id=$1`,[existing.id]);

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { pool } from "@/lib/db";
+import { getPool } from "@/lib/db";
 import { expectedPuzzle } from "@/lib/game-db";
 import { isCorrect,editDistance } from "@/lib/game";
 import { scorePuzzle } from "@/lib/scoring";
@@ -12,7 +12,7 @@ export async function POST(req:Request){
  const user=await getCurrentUser(); if(!user)return NextResponse.json({error:"unauthorized"},{status:401});
  const {sessionId,answer}=await req.json(); if(typeof answer!=="string"||!answer.trim())return NextResponse.json({error:"answer required"},{status:400});
  const p=await expectedPuzzle(sessionId,user.id); if(!p)return NextResponse.json({error:"invalid session"},{status:400});
- const c=await pool.connect(); try{
+ const c=await getPool().connect(); try{
   await c.query('begin');
   const rr=await c.query(`select * from puzzle_results where session_id=$1 and puzzle_id=$2 for update`,[sessionId,p.puzzle_id]); const result=rr.rows[0];
   const attempts=Number(result?.attempts||0)+1; const ok=isCorrect(answer,p.answer,p.numeric_answer,p.accepted_answers||[]);
