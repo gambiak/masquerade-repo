@@ -46,11 +46,23 @@ type ReviewedCandidate = Candidate & {
   review: Review;
 };
 
+type RejectionFeedbackRow = {
+  candidate_id: string;
+  clue_type: ClueType;
+  clue_text: string;
+  answer: string;
+  review_score: number | null;
+  review_notes: Record<string, unknown> | null;
+};
+
 const GENERATOR_MODEL =
   process.env.PUZZLE_GENERATOR_MODEL || "gpt-5.6-terra";
 const REVIEWER_MODEL =
   process.env.PUZZLE_REVIEWER_MODEL || "gpt-5.6-sol";
+
 const REVIEW_THRESHOLD = 80;
+const MAX_GENERATION_ROUNDS = 4;
+const CANDIDATES_PER_ROUND = 12;
 
 const SCORE_RANGES: Record<Difficulty, [number, number]> = {
   clever: [35, 60],
@@ -159,7 +171,6 @@ function validateCandidate(
   }
 
   const hints = [candidate.hint_1, candidate.hint_2, candidate.hint_3];
-
   for (let i = 0; i < hints.length; i++) {
     const hint = hints[i];
     if (!hint || hint.length > 150) {
@@ -185,8 +196,9 @@ function difficultyPrompt(difficulty: Difficulty): string {
   if (difficulty === "clever") {
     return `
 CLEVER:
-Smart and approachable.
-Usually one strong inferential step.
+Smart and approachable, but never trivial or worksheet-like.
+A strong player should usually need a real inference, reframing, or compact Aha.
+The puzzle may look simple at first, but the solve should not be immediate.
 Difficulty score: 35-60.
 `;
   }
@@ -194,7 +206,8 @@ Difficulty score: 35-60.
   if (difficulty === "devious") {
     return `
 DEVIOUS:
-A misleading first interpretation, layered inference, or a two-step insight.
+A misleading first interpretation, layered inference, or two-step insight.
+The solver should need to abandon an initially plausible approach.
 Still fully fair from the clue alone.
 Difficulty score: 55-80.
 `;
@@ -204,6 +217,7 @@ Difficulty score: 55-80.
 FIENDISH:
 Deep lateral reasoning, a subtle constraint, or a multi-stage insight.
 Hard because of reasoning, never because of obscure knowledge.
+The final realization should feel inevitable in hindsight.
 Difficulty score: 70-95.
 `;
 }
@@ -351,7 +365,6 @@ async function structuredResponse<T>(
   });
 
   const payload = await response.json();
-
   if (!response.ok) {
     throw new Error(
       payload?.error?.message || `OpenAI HTTP ${response.status}`
@@ -377,11 +390,87 @@ async function loadHistory() {
   );
 }
 
+function summarizeRejectedFeedback(rows: RejectionFeedbackRow[]): string {
+  if (!rows.length) {
+    return "No earlier candidates in this batch have been reviewed yet.";
+  }
+
+  const flagCounts: Record<string, number> = {
+    answer_fair: 0,
+    difficulty_fit: 0,
+    hint_quality: 0,
+    originality: 0,
+    family_safe: 0,
+  };
+
+  const reasons: { score: number; text: string }[] = [];
+
+  for (const row of rows) {
+    const notes = row.review_notes || {};
+    for (const flag of Object.keys(flagCounts)) {
+      if (notes[flag] === false) flagCounts[flag]++;
+    }
+
+    const reason = clean(String(notes.reason || ""));
+    if (reason) {
+      reasons.push({ score: Number(row.review_score || 0), text: reason });
+    }
+  }
+
+  reasons.sort((a, b) => b.score - a.score);
+
+  const flagSummary = Object.entries(flagCounts)
+    .filter(([, count]) => count > 0)
+    .map(([flag, count]) => `- ${flag}: ${count} rejection(s)`)
+    .join("\n");
+
+  const reasonSummary = reasons
+    .slice(0, 12)
+    .map((item) => `- Score ${item.score}: ${item.text}`)
+    .join("\n");
+
+  return `
+Earlier reviewer feedback from THIS batch:
+
+Quality dimensions that failed:
+${flagSummary || "- none recorded"}
+
+Representative rejection reasons:
+${reasonSummary || "- none recorded"}
+
+Use this feedback as construction guidance. Do NOT merely paraphrase an earlier rejected candidate.
+Solve the underlying quality problem that caused the rejection.
+`;
+}
+
+async function loadRejectionFeedback(batchId: string) {
+  const result = await getPool().query<RejectionFeedbackRow>(
+    `
+      select
+        candidate_id,
+        clue_type,
+        clue_text,
+        answer,
+        review_score,
+        review_notes
+      from puzzle_generation_candidates
+      where batch_id = $1
+        and review_status = 'rejected'
+      order by review_score desc nulls last, reviewed_at desc nulls last
+      limit 40
+    `,
+    [batchId]
+  );
+
+  return summarizeRejectedFeedback(result.rows);
+}
+
 async function generateCandidates(
   difficulty: Difficulty,
   targetDate: string,
   recentPuzzles: { clue_text: string; answer: string }[],
-  round: number
+  round: number,
+  rejectionFeedback: string
 ): Promise<Candidate[]> {
   const history = recentPuzzles
     .slice(0, 60)
@@ -400,31 +489,58 @@ Brand promise:
 Desired emotional sequence:
 "I can solve this" → "Wait…" → "I think I see it…" → "AHA!" → "I need to show someone."
 
-Create concise, elegant, family-safe puzzles for smart players.
+Your job is NOT to create generic puzzle-book filler.
+Your job is to create concise, elegant, family-safe puzzles that smart people enjoy discussing afterward.
 
 Allowed clue types:
 word, rebus, pattern, logic, math.
 
 NON-NEGOTIABLE RULES:
-- No trivia, niche facts, celebrities, pop culture, historical-date knowledge, or geography knowledge.
+- No trivia, niche facts, celebrities, pop culture, historical-date knowledge, geography knowledge, or specialist vocabulary.
 - No audio/video mechanics or picture-sequence guessing.
-- Every clue must contain enough information to solve the puzzle.
+- Every clue must contain enough information to solve the puzzle fairly.
 - One-word answers wherever possible.
 - Numeric answers may only be whole numbers 0-99.
 - Exactly three progressive hints.
-- Hint 1 nudges the mechanism.
-- Hint 2 narrows the route.
-- Hint 3 gets close but does NOT state the answer.
+- Hint 1 nudges the mechanism without restating the clue.
+- Hint 2 meaningfully narrows the route.
+- Hint 3 gets close but does NOT state or effectively spell out the answer.
 - Never place the answer verbatim inside a hint.
 - Avoid famous stock riddles and common internet chestnuts.
 - Avoid ambiguous pattern sequences.
-- Pattern rules must be compelling, not merely mathematically possible.
-- Logic puzzles must be internally consistent.
+- Pattern rules must be compelling and retrospectively obvious, not merely mathematically possible.
+- Logic puzzles must be internally consistent and require meaningful deduction.
 - Rebus puzzles must work in plain text / Unicode.
 - Family-safe for children and adults.
 - Difficulty comes from reasoning, never obscure knowledge.
-- Prefer elegant Aha moments.
+- Prefer elegant Aha moments over calculation volume.
 - Do not repeat or lightly disguise recent Masquerade puzzles.
+- Verify the answer, every clue statement, all three hints, and the explanation before returning a candidate.
+
+QUALITY FLOOR — IMPORTANT:
+Do NOT submit a candidate if its entire mechanism is basically one of these routine forms:
+- obvious shared prefix or suffix completion;
+- elementary compound-word matching;
+- a commonplace dictionary-definition match with no twist;
+- simple fixed/increasing/decreasing number or letter jumps;
+- obvious consecutive-number arithmetic;
+- elementary digit-sum or reversed-digit algebra;
+- stock remainder/divisibility exercises;
+- immediate one-step elimination among a few named objects;
+- obvious add/remove/change-one-letter transformations;
+- a standard worksheet sequence with no second insight.
+
+Those mechanics may appear only when transformed by a genuinely fresh constraint, misdirection, dual interpretation, or elegant second realization.
+
+CONSTRUCTION TARGETS:
+- The clue should be compact, but the reasoning should have substance.
+- The intended answer should be uniquely best, not merely one defensible possibility.
+- A solver should be able to explain the solution cleanly after the Aha.
+- Prefer mechanisms that make the clue look different after the solve.
+- Across the 12 candidates, deliberately vary clue type and reasoning mechanism.
+- Aim for at least 3 clue types in every batch of 12.
+- Do not make more than 4 of the 12 candidates the same clue type.
+- At least half the candidates should involve a non-obvious reframing, constraint interaction, or lateral insight rather than direct computation or recall.
 
 ${difficultyPrompt(difficulty)}
 `;
@@ -432,13 +548,26 @@ ${difficultyPrompt(difficulty)}
   const input = `
 Target date: ${targetDate}
 Difficulty: ${difficulty}
-Generation round: ${round}
+Generation round: ${round} of ${MAX_GENERATION_ROUNDS}
 
-Generate 12 genuinely different candidate puzzles.
+Generate exactly ${CANDIDATES_PER_ROUND} genuinely different candidate puzzles.
+
+This is an adaptive generation round. If reviewer feedback appears below, treat it as mandatory editorial guidance for improving this round.
+
+${rejectionFeedback}
 
 Recent Masquerade puzzles that must not be repeated or lightly rephrased:
-
 ${history || "(none)"}
+
+Before finalizing each candidate, silently test:
+1. Is the answer uniquely best?
+2. Is there a real Aha rather than a routine worksheet operation?
+3. Does the requested difficulty fit?
+4. Are all three hints accurate, progressive, and non-revealing?
+5. Is the explanation complete and logically correct?
+6. Is the mechanism meaningfully different from the rejected examples and recent puzzle history?
+
+Return only candidates that pass those checks.
 `;
 
   const result = await structuredResponse<{ candidates: Candidate[] }>(
@@ -461,28 +590,35 @@ async function reviewCandidates(
 You are Masquerade's independent senior puzzle editor.
 You did NOT construct these puzzles.
 
-Reject aggressively.
+Protect the quality bar. Do not approve mediocre material merely to fill a quota.
 
 A puzzle may be approved ONLY when:
 1. There is one clearly best answer.
 2. The answer follows fairly from the clue without obscure knowledge.
-3. The intended insight produces a satisfying Aha.
+3. The intended insight produces a satisfying Aha rather than a routine worksheet operation.
 4. The requested difficulty is correct.
-5. Hint 1 is subtle.
+5. Hint 1 is subtle and does not merely restate the clue.
 6. Hint 2 meaningfully narrows the route.
-7. Hint 3 strongly assists but does not reveal the answer.
+7. Hint 3 strongly assists but does not reveal or effectively identify the answer.
 8. The puzzle is family-safe.
 9. It is not a famous/common stock riddle or near-copy.
 10. A smart solver could explain why the answer is correct afterward.
 11. Pattern/math puzzles have a uniquely compelling intended rule.
 12. The puzzle does not depend on trivia.
 13. Difficulty comes from thinking, not missing information.
+14. The clue, answer, hints, and explanation are internally consistent.
+15. The puzzle feels appropriate for a premium daily game, not a generic worksheet.
 
-Score harshly.
-80 = publishable.
-90+ = exceptional.
+Scoring guidance:
+- Below 60: flawed, trivial, generic, ambiguous, or materially below requested difficulty.
+- 60-69: sound but too ordinary or too weak for publication.
+- 70-79: promising but still needs editorial improvement.
+- 80-89: publishable Masquerade quality.
+- 90+: exceptional.
+
 Set approved=false if ANY quality boolean is false.
-Never approve a mediocre puzzle merely to fill a quota.
+Set approved=false if review_score < ${REVIEW_THRESHOLD}.
+Never inflate a score to create enough approved puzzles.
 
 Requested difficulty: ${difficulty}
 `;
@@ -677,6 +813,7 @@ async function requireBatch(
       `No generation batch exists for ${targetDate} ${difficulty}. Run generate round 1 first.`
     );
   }
+
   return batch;
 }
 
@@ -712,6 +849,57 @@ function rowToCandidate(row: StoredCandidate): Candidate {
   };
 }
 
+function storedRowToReviewed(row: StoredCandidate): ReviewedCandidate {
+  const notes = row.review_notes || {};
+
+  return {
+    ...rowToCandidate(row),
+    fingerprint: row.content_fingerprint,
+    review: {
+      candidate_id: row.candidate_id,
+      approved: row.review_status === "approved",
+      review_score: Number(row.review_score || 0),
+      answer_fair: notes.answer_fair === true,
+      difficulty_fit: notes.difficulty_fit === true,
+      hint_quality: notes.hint_quality === true,
+      originality: notes.originality === true,
+      family_safe: notes.family_safe === true,
+      reason: String(notes.reason || ""),
+    },
+  };
+}
+
+async function loadApprovedCandidates(batchId: string): Promise<ReviewedCandidate[]> {
+  const result = await getPool().query<StoredCandidate>(
+    `
+      select *
+      from puzzle_generation_candidates
+      where batch_id = $1
+        and review_status = 'approved'
+        and review_score >= $2
+      order by review_score desc, difficulty_score desc
+    `,
+    [batchId, REVIEW_THRESHOLD]
+  );
+
+  return result.rows.map(storedRowToReviewed);
+}
+
+async function hasPublishableFive(batchId: string): Promise<{
+  ready: boolean;
+  approvedCount: number;
+  clueTypes: number;
+}> {
+  const approved = await loadApprovedCandidates(batchId);
+  const chosen = chooseFive(approved);
+
+  return {
+    ready: chosen.length === 5,
+    approvedCount: approved.length,
+    clueTypes: new Set(approved.map((x) => x.clue_type)).size,
+  };
+}
+
 export async function generateStage(
   targetDate: string,
   difficulty: Difficulty,
@@ -729,8 +917,8 @@ export async function generateStage(
     };
   }
 
-  if (![1, 2].includes(round)) {
-    throw new Error("round must be 1 or 2.");
+  if (!Number.isInteger(round) || round < 1 || round > MAX_GENERATION_ROUNDS) {
+    throw new Error(`round must be 1-${MAX_GENERATION_ROUNDS}.`);
   }
 
   await assertNoPlayerSessions(targetDate, difficulty);
@@ -746,6 +934,20 @@ export async function generateStage(
         `delete from puzzle_generation_candidates where batch_id = $1`,
         [batch.id]
       );
+    } else {
+      const readiness = await hasPublishableFive(batch.id);
+      if (readiness.ready) {
+        return {
+          targetDate,
+          difficulty,
+          stage: "generate",
+          round,
+          skipped: true,
+          status: "enough-approved",
+          approvedTotal: readiness.approvedCount,
+          approvedClueTypes: readiness.clueTypes,
+        };
+      }
     }
 
     const history = await loadHistory();
@@ -772,36 +974,43 @@ export async function generateStage(
     );
 
     const seen = new Set(existing.rows.map((x) => x.content_fingerprint));
+    const rejectionFeedback =
+      round === 1
+        ? "No prior feedback exists because this is round 1."
+        : await loadRejectionFeedback(batch.id);
 
     const generated = await generateCandidates(
       difficulty,
       targetDate,
       recentPuzzles,
-      round
+      round,
+      rejectionFeedback
     );
 
     let insertedCount = 0;
+    let deterministicRejected = 0;
+    let duplicateRejected = 0;
 
     for (const candidate of generated) {
       const problems = validateCandidate(candidate, difficulty);
-      if (problems.length) continue;
+      if (problems.length) {
+        deterministicRejected++;
+        continue;
+      }
 
       const fingerprint = makeFingerprint(
         candidate.clue_text,
         candidate.answer
       );
 
-      if (
-        historicalFingerprints.has(fingerprint) ||
-        seen.has(fingerprint)
-      ) {
+      if (historicalFingerprints.has(fingerprint) || seen.has(fingerprint)) {
+        duplicateRejected++;
         continue;
       }
 
       seen.add(fingerprint);
 
       const stableCandidateId = `r${round}-${candidate.candidate_id}`;
-
       const result = await getPool().query(
         `
           insert into puzzle_generation_candidates(
@@ -878,6 +1087,9 @@ export async function generateStage(
         JSON.stringify({
           generated: generated.length,
           inserted: insertedCount,
+          deterministic_rejected: deterministicRejected,
+          duplicate_rejected: duplicateRejected,
+          used_reviewer_feedback: round > 1,
         }),
       ]
     );
@@ -891,7 +1103,10 @@ export async function generateStage(
       model: GENERATOR_MODEL,
       generated: generated.length,
       inserted: insertedCount,
+      deterministicRejected,
+      duplicateRejected,
       candidateCount,
+      usedReviewerFeedback: round > 1,
     };
   } catch (error) {
     await markBatchFailed(batch.id, error);
@@ -930,6 +1145,7 @@ export async function reviewStage(
     );
 
     if (!pending.rows.length) {
+      const readiness = await hasPublishableFive(batch.id);
       const counts = await getPool().query<{
         approved: number;
         rejected: number;
@@ -956,6 +1172,7 @@ export async function reviewStage(
         status: "nothing-pending",
         approved: Number(counts.rows[0]?.approved || 0),
         rejected: Number(counts.rows[0]?.rejected || 0),
+        publishReady: readiness.ready,
       };
     }
 
@@ -995,6 +1212,13 @@ export async function reviewStage(
           [
             row.id,
             JSON.stringify({
+              approved: false,
+              review_score: 0,
+              answer_fair: false,
+              difficulty_fit: false,
+              hint_quality: false,
+              originality: false,
+              family_safe: true,
               reason: "Reviewer returned no matching review.",
             }),
           ]
@@ -1044,6 +1268,7 @@ export async function reviewStage(
 
     const approvedTotal = Number(aggregate.rows[0]?.approved || 0);
     const candidateTotal = Number(aggregate.rows[0]?.total || 0);
+    const readiness = await hasPublishableFive(batch.id);
 
     await getPool().query(
       `
@@ -1069,6 +1294,8 @@ export async function reviewStage(
           reviewed: pending.rows.length,
           approved,
           rejected,
+          publish_ready: readiness.ready,
+          approved_clue_types: readiness.clueTypes,
         }),
       ]
     );
@@ -1084,6 +1311,8 @@ export async function reviewStage(
       rejectedThisStage: rejected,
       approvedTotal,
       candidateTotal,
+      publishReady: readiness.ready,
+      approvedClueTypes: readiness.clueTypes,
     };
   } catch (error) {
     await markBatchFailed(batch.id, error);
@@ -1111,44 +1340,12 @@ export async function publishStage(
   const batch = await requireBatch(targetDate, difficulty);
 
   try {
-    const approvedRows = await getPool().query<StoredCandidate>(
-      `
-        select *
-        from puzzle_generation_candidates
-        where batch_id = $1
-          and review_status = 'approved'
-          and review_score >= $2
-        order by review_score desc, difficulty_score desc
-      `,
-      [batch.id, REVIEW_THRESHOLD]
-    );
-
-    const approved: ReviewedCandidate[] = approvedRows.rows.map((row) => {
-      const notes = row.review_notes || {};
-      const review: Review = {
-        candidate_id: row.candidate_id,
-        approved: true,
-        review_score: Number(row.review_score || 0),
-        answer_fair: notes.answer_fair === true,
-        difficulty_fit: notes.difficulty_fit === true,
-        hint_quality: notes.hint_quality === true,
-        originality: notes.originality === true,
-        family_safe: notes.family_safe === true,
-        reason: String(notes.reason || ""),
-      };
-
-      return {
-        ...rowToCandidate(row),
-        fingerprint: row.content_fingerprint,
-        review,
-      };
-    });
-
+    const approved = await loadApprovedCandidates(batch.id);
     const chosen = chooseFive(approved);
 
     if (chosen.length !== 5) {
       throw new Error(
-        `Could not choose five diverse publication-quality ${difficulty} puzzles. ` +
+        `Could not choose five diverse publication-quality ${difficulty} puzzles after up to ${MAX_GENERATION_ROUNDS} rounds. ` +
           `Approved candidates: ${approved.length}. Need five with at least three clue types and no more than two of one clue type.`
       );
     }
@@ -1165,7 +1362,6 @@ export async function publishStage(
       .sort((a, b) => a.difficulty_score - b.difficulty_score);
 
     const ordered = [...firstFour, finalMask];
-
     const client = await getPool().connect();
 
     try {
@@ -1288,7 +1484,7 @@ export async function publishStage(
         `,
         [
           batch.id,
-          approvedRows.rows.length,
+          approved.length,
           JSON.stringify(
             ordered.map((candidate, index) => ({
               position: index + 1,

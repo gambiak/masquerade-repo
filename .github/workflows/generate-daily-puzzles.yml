@@ -26,7 +26,7 @@ concurrency:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     permissions:
       contents: read
@@ -69,8 +69,8 @@ jobs:
             local difficulty="$2"
             local stage="$3"
             local round="${4:-}"
-
             local payload
+
             if [ -n "$round" ]; then
               payload="{\"targetDate\":\"${target_date}\",\"difficulty\":\"${difficulty}\",\"stage\":\"${stage}\",\"round\":${round}}"
             else
@@ -82,9 +82,9 @@ jobs:
             echo "${target_date} / ${difficulty} / ${stage}${round:+ / round ${round}}"
             echo "----------------------------------------"
 
-            # Each call now performs at most one OpenAI request.
-            # Do not blindly retry 504/timeout responses because
-            # the server may still have completed the AI call.
+            # Each expensive application request performs at most one OpenAI call.
+            # Do not blindly retry timeout responses because the server may still
+            # have completed the model call and persisted its result.
             HTTP_CODE=$(
               curl \
                 --silent \
@@ -119,13 +119,21 @@ jobs:
             echo "========================================"
 
             for DIFFICULTY in clever devious fiendish; do
-              # Preserve the original two-round quality strategy,
-              # but isolate every expensive AI call in its own
-              # App Service request.
+              # Round 1 starts a fresh batch.
               call_stage "$TARGET_DATE" "$DIFFICULTY" "generate" "1"
               call_stage "$TARGET_DATE" "$DIFFICULTY" "review"
 
+              # Rounds 2-4 are adaptive. The application feeds accumulated
+              # reviewer rejection reasons back into the generator. If five
+              # diverse publishable puzzles already exist, generateStage skips
+              # the OpenAI call and the paired review becomes a cheap no-op.
               call_stage "$TARGET_DATE" "$DIFFICULTY" "generate" "2"
+              call_stage "$TARGET_DATE" "$DIFFICULTY" "review"
+
+              call_stage "$TARGET_DATE" "$DIFFICULTY" "generate" "3"
+              call_stage "$TARGET_DATE" "$DIFFICULTY" "review"
+
+              call_stage "$TARGET_DATE" "$DIFFICULTY" "generate" "4"
               call_stage "$TARGET_DATE" "$DIFFICULTY" "review"
 
               # Publishing is database-only and should be fast.
