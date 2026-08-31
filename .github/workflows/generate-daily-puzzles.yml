@@ -85,6 +85,11 @@ jobs:
             # Each expensive application request performs at most one OpenAI call.
             # Do not blindly retry timeout responses because the server may still
             # have completed the model call and persisted its result.
+            # Remove any prior response body so a curl timeout can never print
+            # stale JSON from the previous stage.
+            rm -f response.json
+
+            set +e
             HTTP_CODE=$(
               curl \
                 --silent \
@@ -96,13 +101,25 @@ jobs:
                 "${BASE_URL}/api/admin/puzzles/generate" \
                 --header "Authorization: Bearer ${PUZZLE_CRON_SECRET}" \
                 --header "Content-Type: application/json" \
-                --data "$payload" \
-              || true
+                --data "$payload"
             )
+            CURL_EXIT=$?
+            set -e
 
-            cat response.json || true
+            if [ -f response.json ]; then
+              cat response.json
+            else
+              echo "(no response body)"
+            fi
+
             echo ""
-            echo "HTTP ${HTTP_CODE}"
+            echo "HTTP ${HTTP_CODE:-000}"
+
+            if [ "$CURL_EXIT" -ne 0 ]; then
+              echo "curl exited with code ${CURL_EXIT}."
+              echo "Stage failed."
+              exit 1
+            fi
 
             if [ "$HTTP_CODE" != "200" ]; then
               echo "Stage failed."

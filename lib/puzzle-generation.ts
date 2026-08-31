@@ -62,7 +62,17 @@ const REVIEWER_MODEL =
 
 const REVIEW_THRESHOLD = 80;
 const MAX_GENERATION_ROUNDS = 4;
-const CANDIDATES_PER_ROUND = 12;
+
+const ROUND_CANDIDATE_COUNTS: Record<number, number> = {
+  1: 12,
+  2: 10,
+  3: 7,
+  4: 6,
+};
+
+function candidatesForRound(round: number): number {
+  return ROUND_CANDIDATE_COUNTS[round] || 6;
+}
 
 const SCORE_RANGES: Record<Difficulty, [number, number]> = {
   clever: [35, 60],
@@ -425,7 +435,7 @@ function summarizeRejectedFeedback(rows: RejectionFeedbackRow[]): string {
     .join("\n");
 
   const reasonSummary = reasons
-    .slice(0, 12)
+    .slice(0, 6)
     .map((item) => `- Score ${item.score}: ${item.text}`)
     .join("\n");
 
@@ -457,7 +467,7 @@ async function loadRejectionFeedback(batchId: string) {
       where batch_id = $1
         and review_status = 'rejected'
       order by review_score desc nulls last, reviewed_at desc nulls last
-      limit 40
+      limit 24
     `,
     [batchId]
   );
@@ -472,8 +482,11 @@ async function generateCandidates(
   round: number,
   rejectionFeedback: string
 ): Promise<Candidate[]> {
+  const candidateCount = candidatesForRound(round);
+  const historyLimit = round === 1 ? 60 : 30;
+
   const history = recentPuzzles
-    .slice(0, 60)
+    .slice(0, historyLimit)
     .map(
       (p) =>
         `- ${JSON.stringify(p.clue_text)} -> ${JSON.stringify(p.answer)}`
@@ -537,9 +550,9 @@ CONSTRUCTION TARGETS:
 - The intended answer should be uniquely best, not merely one defensible possibility.
 - A solver should be able to explain the solution cleanly after the Aha.
 - Prefer mechanisms that make the clue look different after the solve.
-- Across the 12 candidates, deliberately vary clue type and reasoning mechanism.
-- Aim for at least 3 clue types in every batch of 12.
-- Do not make more than 4 of the 12 candidates the same clue type.
+- Across this round's candidates, deliberately vary clue type and reasoning mechanism.
+- Aim for at least 3 clue types when the round contains 7 or more candidates, and at least 2 clue types in smaller rounds.
+- Do not let one clue type dominate the round.
 - At least half the candidates should involve a non-obvious reframing, constraint interaction, or lateral insight rather than direct computation or recall.
 
 ${difficultyPrompt(difficulty)}
@@ -550,9 +563,12 @@ Target date: ${targetDate}
 Difficulty: ${difficulty}
 Generation round: ${round} of ${MAX_GENERATION_ROUNDS}
 
-Generate exactly ${CANDIDATES_PER_ROUND} genuinely different candidate puzzles.
+Generate exactly ${candidateCount} genuinely different candidate puzzles.
 
 This is an adaptive generation round. If reviewer feedback appears below, treat it as mandatory editorial guidance for improving this round.
+
+Later rounds are deliberately smaller. Spend the extra reasoning budget on correctness, originality, and a strong Aha rather than verbosity.
+Keep clue text, hints, and explanations concise.
 
 ${rejectionFeedback}
 
