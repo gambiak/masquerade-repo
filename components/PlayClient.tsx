@@ -27,6 +27,7 @@ export default function PlayClient({
 }) {
   const [answer, setAnswer] = useState("");
   const [coach, setCoach] = useState("");
+  const [coachIsSuccess, setCoachIsSuccess] = useState(false);
   const [hints, setHints] = useState(shownHints);
   const [busy, setBusy] = useState(false);
   const [showQuitDialog, setShowQuitDialog] = useState(false);
@@ -38,7 +39,11 @@ export default function PlayClient({
       body: JSON.stringify({ sessionId: session.id }),
     })
       .then((r) => r.json())
-      .then((d) => d.hints && setHints(d.hints));
+      .then((d) => {
+        if (d.hints) {
+          setHints(d.hints);
+        }
+      });
   }, [session.id, puzzle.id]);
 
   async function submit() {
@@ -46,59 +51,74 @@ export default function PlayClient({
 
     setBusy(true);
 
-    const r = await fetch("/api/answer", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        sessionId: session.id,
-        answer,
-      }),
-    });
+    try {
+      const r = await fetch("/api/answer", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessionId: session.id,
+          answer,
+        }),
+      });
 
-    const data = await r.json();
-    setBusy(false);
+      const data = await r.json();
 
-    if (data.correct) {
-      setCoach(data.message);
+      if (data.correct) {
+        setCoach(data.message);
+        setCoachIsSuccess(true);
 
-      setTimeout(() => {
-        if (puzzle.is_final_mask) {
-          window.location.href = "/results/latest";
-        } else {
-          window.location.reload();
-        }
-      }, 900);
-    } else {
-      setCoach(data.message);
+        setTimeout(() => {
+          if (puzzle.is_final_mask) {
+            window.location.href = `/results/latest?difficulty=${session.difficulty_band}`;
+          } else {
+            window.location.reload();
+          }
+        }, 900);
+      } else {
+        setCoach(data.message);
+        setCoachIsSuccess(false);
+      }
+    } finally {
+      setBusy(false);
     }
   }
 
   async function hint() {
-    if (hints.length >= 3) return;
+    if (hints.length >= 3 || busy) return;
 
-    const r = await fetch("/api/hint", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionId: session.id }),
-    });
+    setBusy(true);
 
-    const data = await r.json();
+    try {
+      const r = await fetch("/api/hint", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: session.id }),
+      });
 
-    if (data.hint) {
-      setHints((current) => [...current, data.hint]);
+      const data = await r.json();
+
+      if (data.hint) {
+        setHints((current) => [...current, data.hint]);
+      }
+    } finally {
+      setBusy(false);
     }
   }
 
   async function confirmQuit() {
     setBusy(true);
 
-    await fetch("/api/session/quit", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionId: session.id }),
-    });
+    try {
+      await fetch("/api/session/quit", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: session.id }),
+      });
 
-    window.location.href = "/";
+      window.location.href = "/";
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -131,19 +151,22 @@ export default function PlayClient({
           className="answer"
           value={answer}
           onChange={(e) => setAnswer(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && submit()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              submit();
+            }
+          }}
           placeholder="One-word answer…"
           autoComplete="off"
           autoCapitalize="none"
         />
 
         {coach && (
-          <div className={coach.includes("Correct") ? "success" : "coach"}>
+          <div className={coachIsSuccess ? "success" : "coach"}>
             {coach}
           </div>
         )}
 
-        {/* Hints now appear ABOVE the Submit button */}
         {hints.length > 0 && (
           <div className="hints-list">
             {hints.map((h, i) => (
@@ -158,6 +181,14 @@ export default function PlayClient({
 
         <div className="stack">
           <button
+            className="btn primary"
+            onClick={submit}
+            disabled={busy || !answer.trim()}
+          >
+            {busy ? "THINKING…" : "SUBMIT"}
+          </button>
+
+          <button
             className="btn"
             onClick={hint}
             disabled={busy || hints.length >= 3}
@@ -166,14 +197,6 @@ export default function PlayClient({
             {hints.length >= 3
               ? "ALL HINTS REVEALED"
               : `HINT ${hints.length + 1} OF 3`}
-          </button>
-
-          <button
-            className="btn primary"
-            onClick={submit}
-            disabled={busy || !answer.trim()}
-          >
-            {busy ? "THINKING…" : "SUBMIT"}
           </button>
 
           <button
@@ -205,14 +228,15 @@ export default function PlayClient({
             <h2 id="quit-title">Quit this game?</h2>
 
             <p>
-              Your unfinished run will be discarded. Today's mask will still
-              be waiting if you decide to begin again.
+              Your unfinished run will be discarded. Today&apos;s mask will
+              still be waiting if you decide to begin again.
             </p>
 
             <div className="modal-actions">
               <button
                 className="btn primary"
                 onClick={() => setShowQuitDialog(false)}
+                disabled={busy}
               >
                 KEEP PLAYING
               </button>
@@ -220,8 +244,9 @@ export default function PlayClient({
               <button
                 className="btn danger"
                 onClick={confirmQuit}
+                disabled={busy}
               >
-                YES, QUIT GAME
+                {busy ? "QUITTING…" : "YES, QUIT GAME"}
               </button>
             </div>
           </div>
