@@ -72,7 +72,7 @@ const ROUND_CANDIDATE_COUNTS: Record<number, number> = {
 };
 
 function candidatesForRound(round: number): number {
-  return ROUND_CANDIDATE_COUNTS[round] || 6;
+  return ROUND_CANDIDATE_COUNTS[round] || 3;
 }
 
 const SCORE_RANGES: Record<Difficulty, [number, number]> = {
