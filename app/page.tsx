@@ -1,130 +1,115 @@
 import Link from "next/link";
 import { getCurrentUser } from "@/lib/auth";
 import { query } from "@/lib/db";
+import { todayGameDate } from "@/lib/day";
 
 export default async function Home() {
   const user = await getCurrentUser();
+  const today = todayGameDate();
 
   let active: any = null;
-  let last: any = null;
+  let completed: any = null;
 
   if (user) {
-    active =
-      (
-        await query<any>(
-          `
-            select *
-            from game_sessions
-            where user_id = $1
-              and status = 'active'
-            order by started_at desc
-            limit 1
-          `,
-          [user.id]
-        )
-      ).rows[0] || null;
+    active = (
+      await query<any>(
+        `
+          select gs.*
+          from game_sessions gs
+          join daily_games dg
+            on dg.id = gs.daily_game_id
+          where gs.user_id = $1
+            and gs.status = 'active'
+            and dg.game_date = $2
+          order by gs.started_at desc
+          limit 1
+        `,
+        [user.id, today]
+      )
+    ).rows[0] || null;
 
-    last =
-      (
-        await query<any>(
-          `
-            select *
-            from game_sessions
-            where user_id = $1
-              and status = 'completed'
-            order by completed_at desc
-            limit 1
-          `,
-          [user.id]
-        )
-      ).rows[0] || null;
+    completed = (
+      await query<any>(
+        `
+          select gs.*
+          from game_sessions gs
+          join daily_games dg
+            on dg.id = gs.daily_game_id
+          where gs.user_id = $1
+            and gs.status = 'completed'
+            and dg.game_date = $2
+          order by gs.completed_at desc
+          limit 1
+        `,
+        [user.id, today]
+      )
+    ).rows[0] || null;
   }
 
   return (
     <main>
       <section className="hero">
-        <div className="eyebrow">
-          Daily Masquerade
-        </div>
-
+        <div className="eyebrow">Daily Masquerade</div>
         <h1>
           See less.
           <br />
           Think more.
         </h1>
-
         <p>
-          Five shared daily puzzles. Challenge friends,
-          compare spoiler-free results, and build a morning
-          ritual.
+          Five shared daily puzzles. Challenge friends, compare spoiler-free
+          results, and build a morning ritual.
         </p>
       </section>
 
       {!user ? (
         <section className="card">
-          <h2>Play with friends</h2>
-
+          <h2>Play today&apos;s Masquerade</h2>
           <p>
-            Sign in to save progress, challenge friends,
-            join crews, and compare daily results.
+            Sign in to save today&apos;s progress, challenge friends, join
+            crews, and compare results.
           </p>
-
-          <Link
-            className="btn primary"
-            href="/login"
-          >
+          <Link className="btn primary" href="/login">
             SIGN IN / CREATE ACCOUNT
           </Link>
         </section>
       ) : (
         <section className="card">
-          <div className="eyebrow">
-            Today&apos;s game
-          </div>
-
+          <div className="eyebrow">Today&apos;s game</div>
           <h2>
             {active
               ? "Your game is waiting."
-              : "Ready for today's Masquerade?"}
+              : completed
+                ? "Today's mask has fallen."
+                : "Ready for today's Masquerade?"}
           </h2>
 
-          <div className="home-primary-action">
-            <Link
-              className="btn primary"
-              href={active ? "/play" : "/start"}
-            >
-              {active
-                ? "CONTINUE GAME"
-                : "START TODAY'S MASQUERADE"}
+          {active ? (
+            <Link className="btn primary" href="/play">
+              CONTINUE TODAY&apos;S GAME
             </Link>
-          </div>
+          ) : (
+            <Link className="btn primary" href="/start">
+              START TODAY&apos;S MASQUERADE
+            </Link>
+          )}
         </section>
       )}
 
-      {last && (
+      {completed && (
         <section className="share">
-          <div className="eyebrow result-eyebrow">
-            Last result
-          </div>
-
+          <div className="eyebrow">Today&apos;s result</div>
           <h2>
-            {last.score} pts ·{" "}
-            {last.pure_solves} Pure Solves
+            {completed.score} pts · {completed.pure_solves} Pure Solves
           </h2>
-
           <p>
-            {last.hints_used} hints ·{" "}
-            {Math.floor(
-              Number(last.solve_time_ms || 0) / 1000
-            )}{" "}
-            sec
+            {completed.hints_used} hints ·{" "}
+            {Math.floor(Number(completed.solve_time_ms || 0) / 1000)} sec
           </p>
-
           <Link
-            className="btn result-link"
-            href="/results/latest"
+            className="btn"
+            href={`/results/latest?difficulty=${completed.difficulty_band}`}
           >
-            VIEW &amp; SHARE RESULT
+            VIEW & SHARE TODAY&apos;S RESULT
           </Link>
         </section>
       )}

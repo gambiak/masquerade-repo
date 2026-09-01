@@ -20,10 +20,14 @@ export default function PlayClient({
   session,
   puzzle,
   shownHints,
+  solvedCount,
+  totalCount,
 }: {
   session: Session;
   puzzle: Puzzle;
   shownHints: string[];
+  solvedCount: number;
+  totalCount: number;
 }) {
   const [answer, setAnswer] = useState("");
   const [coach, setCoach] = useState("");
@@ -33,6 +37,10 @@ export default function PlayClient({
   const [showQuitDialog, setShowQuitDialog] = useState(false);
 
   useEffect(() => {
+    setAnswer("");
+    setCoach("");
+    setCoachIsSuccess(false);
+
     fetch("/api/hints", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -68,14 +76,15 @@ export default function PlayClient({
         setCoachIsSuccess(true);
 
         setTimeout(() => {
-          if (puzzle.is_final_mask) {
-            window.location.href = `/results/latest?difficulty=${session.difficulty_band}`;
+          if (data.completed) {
+            window.location.href =
+              `/results/latest?difficulty=${session.difficulty_band}`;
           } else {
             window.location.reload();
           }
         }, 900);
       } else {
-        setCoach(data.message);
+        setCoach(data.message || "Not quite. Try another angle.");
         setCoachIsSuccess(false);
       }
     } finally {
@@ -100,6 +109,36 @@ export default function PlayClient({
       if (data.hint) {
         setHints((current) => [...current, data.hint]);
       }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function skip() {
+    if (busy) return;
+
+    setBusy(true);
+
+    try {
+      const r = await fetch("/api/session/skip", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: session.id }),
+      });
+
+      const data = await r.json();
+
+      if (r.ok) {
+        window.location.reload();
+        return;
+      }
+
+      setCoach(
+        data.error === "last-unsolved-clue"
+          ? "This is the last unsolved clue. The mask wants an answer."
+          : data.error || "Could not skip this clue."
+      );
+      setCoachIsSuccess(false);
     } finally {
       setBusy(false);
     }
@@ -131,7 +170,9 @@ export default function PlayClient({
         )}
 
         <div className="row">
-          <span className="eyebrow">Clue {puzzle.position}</span>
+          <span className="eyebrow">
+            Clue {puzzle.position} · {solvedCount}/{totalCount} solved
+          </span>
           <span className="pill">{puzzle.clue_type}</span>
         </div>
 
@@ -200,6 +241,14 @@ export default function PlayClient({
           </button>
 
           <button
+            className="btn"
+            onClick={skip}
+            disabled={busy || totalCount - solvedCount <= 1}
+          >
+            SKIP FOR NOW
+          </button>
+
+          <button
             className="btn danger"
             onClick={() => setShowQuitDialog(true)}
             disabled={busy}
@@ -222,9 +271,7 @@ export default function PlayClient({
             onMouseDown={(e) => e.stopPropagation()}
           >
             <div className="modal-mask">🎭</div>
-
             <div className="eyebrow">Leave the masquerade?</div>
-
             <h2 id="quit-title">Quit this game?</h2>
 
             <p>

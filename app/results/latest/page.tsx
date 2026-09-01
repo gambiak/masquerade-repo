@@ -1,5 +1,6 @@
 import { getCurrentUser } from "@/lib/auth";
 import { query } from "@/lib/db";
+import { todayGameDate } from "@/lib/day";
 import { redirect } from "next/navigation";
 import ShareButton from "@/components/ShareButton";
 
@@ -19,6 +20,7 @@ export default async function Latest({
   }
 
   const params = await searchParams;
+  const today = todayGameDate();
 
   const requestedDifficulty =
     typeof params.difficulty === "string"
@@ -27,7 +29,9 @@ export default async function Latest({
 
   const validDifficulty =
     requestedDifficulty &&
-    ["clever", "devious", "fiendish"].includes(requestedDifficulty)
+    ["clever", "devious", "fiendish"].includes(
+      requestedDifficulty
+    )
       ? requestedDifficulty
       : null;
 
@@ -37,17 +41,19 @@ export default async function Latest({
           `
             select
               gs.*,
-              dg.game_number
+              dg.game_number,
+              dg.game_date
             from game_sessions gs
             join daily_games dg
               on dg.id = gs.daily_game_id
             where gs.user_id = $1
               and gs.status = 'completed'
               and gs.difficulty_band = $2
+              and dg.game_date = $3
             order by gs.completed_at desc
             limit 1
           `,
-          [user.id, validDifficulty]
+          [user.id, validDifficulty, today]
         )
       ).rows[0]
     : (
@@ -55,19 +61,22 @@ export default async function Latest({
           `
             select
               gs.*,
-              dg.game_number
+              dg.game_number,
+              dg.game_date
             from game_sessions gs
             join daily_games dg
               on dg.id = gs.daily_game_id
             where gs.user_id = $1
               and gs.status = 'completed'
+              and dg.game_date = $2
             order by gs.completed_at desc
             limit 1
           `,
-          [user.id]
+          [user.id, today]
         )
       ).rows[0];
 
+  // Past-day results are deliberately inaccessible from this page.
   if (!result) {
     redirect("/");
   }
@@ -91,14 +100,8 @@ export default async function Latest({
 
   const grid = puzzleResults
     .map((item: any) => {
-      if (item.pure_solve) {
-        return "🟣";
-      }
-
-      if (Number(item.hints_used) === 0) {
-        return "✅";
-      }
-
+      if (item.pure_solve) return "🟣";
+      if (Number(item.hints_used) === 0) return "✅";
       return "💡".repeat(
         Math.min(Number(item.hints_used), 3)
       );
@@ -125,12 +128,10 @@ export default async function Latest({
   return (
     <main>
       <section className="hero">
-        <div className="eyebrow">Spoiler-free result</div>
-
-        <h1>
-          Masquerade #{result.game_number} complete.
-        </h1>
-
+        <div className="eyebrow">
+          Today&apos;s spoiler-free result
+        </div>
+        <h1>Masquerade #{result.game_number} complete.</h1>
         <p>{difficultyLabel}</p>
       </section>
 
@@ -138,19 +139,12 @@ export default async function Latest({
         <div className="eyebrow result-eyebrow">
           {difficultyLabel}
         </div>
-
         <h2>{result.score} pts</h2>
-
-        <p className="result-grid">
-          {grid}
-        </p>
-
+        <p className="result-grid">{grid}</p>
         <p>
           {result.pure_solves} Pure Solves ·{" "}
-          {result.hints_used} hints ·{" "}
-          {seconds} sec
+          {result.hints_used} hints · {seconds} sec
         </p>
-
         <ShareButton text={shareText} />
       </section>
     </main>
