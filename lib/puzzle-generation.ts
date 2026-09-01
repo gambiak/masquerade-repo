@@ -65,10 +65,10 @@ const PLAYABLE_REVIEW_THRESHOLD = 25;
 const MAX_GENERATION_ROUNDS = 4;
 
 const ROUND_CANDIDATE_COUNTS: Record<number, number> = {
-  1: 12,
-  2: 10,
-  3: 7,
-  4: 6,
+  1: 6,
+  2: 5,
+  3: 4,
+  4: 3,
 };
 
 function candidatesForRound(round: number): number {
