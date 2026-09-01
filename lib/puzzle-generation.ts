@@ -146,8 +146,8 @@ function validateCandidate(
     problems.push("invalid clue type");
   }
 
-  if (!candidate.clue_text || candidate.clue_text.length > 240) {
-    problems.push("clue must be 1-240 characters");
+  if (!candidate.clue_text || candidate.clue_text.length > 120) {
+    problems.push("clue must be 1-120 characters");
   }
 
   if (!candidate.answer || candidate.answer.length > 40) {
@@ -184,8 +184,8 @@ function validateCandidate(
   const hints = [candidate.hint_1, candidate.hint_2, candidate.hint_3];
   for (let i = 0; i < hints.length; i++) {
     const hint = hints[i];
-    if (!hint || hint.length > 150) {
-      problems.push(`hint ${i + 1} must be 1-150 characters`);
+    if (!hint || hint.length > 110) {
+      problems.push(`hint ${i + 1} must be 1-110 characters`);
     }
     if (hintContainsAnswer(candidate.answer, hint)) {
       problems.push(`hint ${i + 1} contains the answer`);
@@ -509,6 +509,22 @@ Your job is to create concise, elegant, family-safe puzzles that smart people en
 Allowed clue types:
 word, rebus, pattern, logic, math.
 
+CLUE STYLE — CENTRAL TO THE MASQUERADE IDENTITY:
+- "See less. Think more."
+- Clue text must be 120 characters or fewer, including line breaks.
+- Prefer fragments, compact arrangements, symbols, tiny scenarios, and deliberate omission.
+- Do not explain the mechanism in the clue.
+- Do not write mini-stories, long setup paragraphs, or worksheet-style instructions.
+- The clue should feel slightly mysterious before the solve and obvious in hindsight.
+- Preserve fairness: mysterious means compressed, not vague.
+- Whenever the same puzzle can be expressed in fewer words without losing fairness, use fewer words.
+
+MATH IS RARE:
+- Treat math as an occasional spice, not a core category.
+- Generate no more than ONE math candidate in any round.
+- Prefer word, rebus, pattern, and logic.
+- A math candidate must have a lateral twist or elegant Aha; routine arithmetic/algebra is not enough.
+
 NON-NEGOTIABLE RULES:
 - No trivia, niche facts, celebrities, pop culture, historical-date knowledge, geography knowledge, or specialist vocabulary.
 - No audio/video mechanics or picture-sequence guessing.
@@ -547,13 +563,14 @@ Do NOT submit a candidate if its entire mechanism is basically one of these rout
 Those mechanics may appear only when transformed by a genuinely fresh constraint, misdirection, dual interpretation, or elegant second realization.
 
 CONSTRUCTION TARGETS:
-- The clue should be compact, but the reasoning should have substance.
+- The clue should be exceptionally compact—ideally under 80 characters and never over 120—but the reasoning should have substance.
 - The intended answer should be uniquely best, not merely one defensible possibility.
 - A solver should be able to explain the solution cleanly after the Aha.
 - Prefer mechanisms that make the clue look different after the solve.
 - Across this round's candidates, deliberately vary clue type and reasoning mechanism.
 - Aim for at least 3 clue types when the round contains 7 or more candidates, and at least 2 clue types in smaller rounds.
 - Do not let one clue type dominate the round.
+- Generate zero math candidates when a strong non-math alternative exists; never generate more than one math candidate in a round.
 - At least half the candidates should involve a non-obvious reframing, constraint interaction, or lateral insight rather than direct computation or recall.
 
 ${difficultyPrompt(difficulty)}
@@ -570,6 +587,8 @@ This is an adaptive generation round. If reviewer feedback appears below, treat 
 
 Later rounds are deliberately smaller. Spend the extra reasoning budget on correctness, originality, and a strong Aha rather than verbosity.
 Keep clue text, hints, and explanations concise.
+Clues are the priority: terse, intriguing, fair, and never more than 120 characters.
+Math should be absent or limited to one candidate in this round.
 
 ${rejectionFeedback}
 
@@ -676,6 +695,11 @@ function sortReviewedCandidates(
   candidates: ReviewedCandidate[]
 ): ReviewedCandidate[] {
   return [...candidates].sort((a, b) => {
+    // Math is intentionally rare in Masquerade. Prefer an otherwise comparable
+    // non-math puzzle even when the math puzzle has a slightly higher score.
+    if (a.clue_type === "math" && b.clue_type !== "math") return 1;
+    if (b.clue_type === "math" && a.clue_type !== "math") return -1;
+
     if (b.review.review_score !== a.review.review_score) {
       return b.review.review_score - a.review.review_score;
     }
@@ -697,6 +721,9 @@ function chooseWithTypeCap(
 
     const current = clueCounts.get(candidate.clue_type) || 0;
     if (current >= typeCap) continue;
+
+    // Keep the published five to at most one math puzzle.
+    if (candidate.clue_type === "math" && current >= 1) continue;
 
     chosen.push(candidate);
     clueCounts.set(candidate.clue_type, current + 1);
@@ -721,9 +748,17 @@ function chooseFive(candidates: ReviewedCandidate[]): ReviewedCandidate[] {
   const relaxed = chooseWithTypeCap(candidates, 3, 2);
   if (relaxed.length === 5) return relaxed;
 
-  // Last-resort playable set: take the five strongest reviewed candidates.
+  // Last-resort playable set: still prefer at most one math puzzle.
   // Safety/fairness filtering happens before candidates reach this function.
-  return sortReviewedCandidates(candidates).slice(0, 5);
+  const sorted = sortReviewedCandidates(candidates);
+  const nonMath = sorted.filter((x) => x.clue_type !== "math");
+  const math = sorted.filter((x) => x.clue_type === "math");
+
+  if (nonMath.length >= 4) {
+    return [...nonMath.slice(0, 5), ...math.slice(0, 1)].slice(0, 5);
+  }
+
+  return sorted.slice(0, 5);
 }
 
 function assertInputs(targetDate: string, difficulty: Difficulty): void {
