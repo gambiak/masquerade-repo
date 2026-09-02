@@ -971,10 +971,14 @@ async function loadPlayableCandidates(
         and review_status in ('approved', 'rejected')
         and review_score >= $2
         and coalesce((review_notes ->> 'answer_fair')::boolean, false) = true
-        and coalesce((review_notes ->> 'hint_quality')::boolean, false) = true
         and coalesce((review_notes ->> 'family_safe')::boolean, false) = true
       order by
         case when review_status = 'approved' then 0 else 1 end,
+        case
+          when coalesce((review_notes ->> 'hint_quality')::boolean, false) = true
+          then 0
+          else 1
+        end,
         review_score desc,
         difficulty_score desc
     `,
@@ -1462,7 +1466,7 @@ export async function publishStage(
     if (chosen.length !== 5) {
       throw new Error(
         `Could not choose five safe, fair, playable ${difficulty} puzzles. ` +
-          `Strict approvals: ${approved.length}. Need at least five reviewed candidates with fair answers, sound hints, and family-safe content.`
+          `Strict approvals: ${approved.length}. Need at least five reviewed candidates with fair answers and family-safe content.`
       );
     }
 
