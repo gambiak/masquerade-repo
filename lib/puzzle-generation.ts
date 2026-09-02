@@ -1,4 +1,4 @@
-import crypto from "crypto";
+import crypto from "crypto"; 
 import { getPool } from "@/lib/db";
 
 export type Difficulty = "clever" | "devious" | "fiendish";
