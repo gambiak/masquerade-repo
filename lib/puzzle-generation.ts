@@ -546,6 +546,7 @@ NON-NEGOTIABLE RULES:
 - Prefer elegant Aha moments over calculation volume.
 - Do not repeat or lightly disguise recent Masquerade puzzles.
 - Verify the answer, every clue statement, all three hints, and the explanation before returning a candidate.
+- Do not pick clues that have yes/no or true/false answers.
 
 QUALITY FLOOR — IMPORTANT:
 Do NOT submit a candidate if its entire mechanism is basically one of these routine forms:
