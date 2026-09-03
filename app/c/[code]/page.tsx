@@ -25,7 +25,7 @@ export default async function ChallengeInvite({
           u.display_name,
           u.email as challenger_email,
           dg.difficulty_band,
-          dg.game_date
+          dg.game_date::text as game_date
         from challenges c
         join users u
           on u.id = c.challenger_id
