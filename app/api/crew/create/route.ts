@@ -72,4 +72,4 @@ export async function POST(req: Request) {
   } finally {
     client.release();
   }
-} 
+}
