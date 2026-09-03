@@ -51,9 +51,10 @@ export async function POST(req: Request) {
           and c.status <> 'expired'
           and (
             c.challenged_id = $3
-            or c.challenged_id is null
-            or c.challenger_id = $3
-            or lower(c.challenged_email) = lower($4)
+            or (
+              c.challenged_id is null
+              and lower(c.challenged_email) = lower($4)
+            )
           )
       `,
       [code, today, user.id, user.email]

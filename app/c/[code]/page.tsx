@@ -12,9 +12,7 @@ export default async function ChallengeInvite({
   const user = await getCurrentUser();
 
   if (!user) {
-    redirect(
-      `/login?returnTo=/c/${encodeURIComponent(code)}`
-    );
+    redirect(`/login?returnTo=/c/${encodeURIComponent(code)}`);
   }
 
   const ch = (
@@ -70,10 +68,108 @@ export default async function ChallengeInvite({
     );
   }
 
-  if (
-    !ch.challenged_id &&
-    ch.challenger_id !== user.id
-  ) {
+  const isChallenger = ch.challenger_id === user.id;
+
+  const isIntendedRecipient =
+    !!user.email &&
+    !!ch.challenged_email &&
+    String(user.email).toLowerCase() ===
+      String(ch.challenged_email).toLowerCase();
+
+  const isAcceptedRecipient =
+    !!ch.challenged_id && ch.challenged_id === user.id;
+
+  /*
+   * The challenger should see a confirmation/waiting screen,
+   * not the recipient's "challenged you" experience.
+   */
+  if (isChallenger) {
+    const recipientSession = ch.challenged_id
+      ? (
+          await query<any>(
+            `
+              select *
+              from game_sessions
+              where user_id = $1
+                and daily_game_id = $2
+                and status = 'completed'
+            `,
+            [ch.challenged_id, ch.daily_game_id]
+          )
+        ).rows[0]
+      : null;
+
+    const challengerSession = (
+      await query<any>(
+        `
+          select *
+          from game_sessions
+          where user_id = $1
+            and daily_game_id = $2
+            and status = 'completed'
+        `,
+        [ch.challenger_id, ch.daily_game_id]
+      )
+    ).rows[0];
+
+    return (
+      <main>
+        <section className="hero">
+          <div className="eyebrow">Friend Challenge</div>
+          <h1>Challenge sent.</h1>
+          <p>
+            You challenged {ch.challenged_email}.
+          </p>
+          <p>
+            {String(ch.difficulty_band).toUpperCase()} · {challengeDate}
+          </p>
+        </section>
+
+        <section className="card">
+          {recipientSession && challengerSession ? (
+            <>
+              <h2>Challenge complete</h2>
+              <p>
+                You: {challengerSession.score} pts ·{" "}
+                {challengerSession.pure_solves} Pure Solves
+              </p>
+              <p>
+                Challenger: {recipientSession.score} pts ·{" "}
+                {recipientSession.pure_solves} Pure Solves
+              </p>
+            </>
+          ) : (
+            <>
+              <h2>Waiting for them to play.</h2>
+              <p>
+                Your score stays hidden until they finish the challenge.
+              </p>
+            </>
+          )}
+        </section>
+      </main>
+    );
+  }
+
+  /*
+   * A challenge addressed to an email address may only be accepted
+   * by the signed-in account using that email.
+   */
+  if (!isIntendedRecipient && !isAcceptedRecipient) {
+    return (
+      <main>
+        <section className="hero">
+          <div className="eyebrow">Friend Challenge</div>
+          <h1>This challenge isn&apos;t for this account.</h1>
+          <p>
+            Sign in with the email address this challenge was sent to.
+          </p>
+        </section>
+      </main>
+    );
+  }
+
+  if (!ch.challenged_id) {
     await query(
       `
         update challenges
@@ -131,8 +227,8 @@ export default async function ChallengeInvite({
               You: {mine.score} pts · {mine.pure_solves} Pure Solves
             </p>
             <p>
-              Challenger: {theirs.score} pts · {theirs.pure_solves} Pure
-              Solves
+              Challenger: {theirs.score} pts ·{" "}
+              {theirs.pure_solves} Pure Solves
             </p>
           </>
         ) : (
@@ -143,15 +239,9 @@ export default async function ChallengeInvite({
                 : "Same five puzzles. No spoilers."}
             </h2>
 
-            <form
-              action="/api/challenge/start"
-              method="post"
-            >
-              <input
-                type="hidden"
-                name="code"
-                value={code}
-              />
+            <form action="/api/challenge/start" method="post">
+              <input type="hidden" name="code" value={code} />
+
               <button className="btn primary">
                 {mine?.status === "active"
                   ? "CONTINUE CHALLENGE"
