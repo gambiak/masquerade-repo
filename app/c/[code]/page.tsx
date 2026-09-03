@@ -1,6 +1,7 @@
 import { getCurrentUser } from "@/lib/auth";
 import { query } from "@/lib/db";
 import { todayGameDate } from "@/lib/day";
+import ChallengeShare from "@/components/ChallengeShare";
 import { redirect, notFound } from "next/navigation";
 
 export default async function ChallengeInvite({
@@ -112,6 +113,12 @@ export default async function ChallengeInvite({
       )
     ).rows[0];
 
+    const siteUrl =
+      process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "") ||
+      "https://masquerade-linux-azure-gmhzcwb8e2dndkad.canadacentral-01.azurewebsites.net";
+
+    const challengeUrl = `${siteUrl}/c/${code}`;
+
     return (
       <main>
         <section className="hero">
@@ -141,9 +148,12 @@ export default async function ChallengeInvite({
           ) : (
             <>
               <h2>Waiting for them to play.</h2>
+
               <p>
                 Your score stays hidden until they finish the challenge.
               </p>
+
+              <ChallengeShare challengeUrl={challengeUrl} />
             </>
           )}
         </section>
